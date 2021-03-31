@@ -24,405 +24,123 @@ library(tidyverse)                                  # ... the usual core package
 ```{r, loading coin data}
 coins_overview = crypto_list()
 #coin_history = crypto_history(coins_overview, limit=NROW(coins_overview), start_date="20200101")
-coin_history = crypto_history(coins_overview, limit=20, start_date="20200101")
+coin_history = crypto_history(coins_overview, limit=20, start_date="20150101")
 
 saveRDS(coins_overview, file = "short_coin_overview.RData")
 saveRDS(coin_history, file = "short_coin_history_30032021.RData")
 ```
 
 ```{r first, warning = FALSE, message = FALSE}
-data <- coin_history %>% arrange(time_open,id)                 # Just making sure all is in order
-tick <- levels(data$id)                           # Set of assets
+data <- coin_history %>% arrange(time_open,name)                 # Just making sure all is in order
+id = levels(data$name)                           # Set of assets
 data <- data  %>% 
-    group_by(id) %>%                              # Group asset by asset
+    group_by(name) %>%                              # Group asset by asset
     mutate(P_Return = close / lag(close) - 1) %>%   # Adding past returns
     mutate(F_Return = dplyr::lead(P_Return)) %>%           # Adding forward returns
-    na.omit()                                       # Take out missing data
+    na.omit()                                     # Take out missing data
+    
+data$time_open = as.Date(as.POSIXct(data$time_open))
+    
 ```
 
-### Adds median returns ###
-```{r}
-
-```
-
-
-Normalization 
-
-```{r, defining features}
-features <- colnames(coin_history[7:12]) # Keep the feature's column names (hard-coded, beware!)
-features_short <- c("high", "low", "close", "market_cap")
-```
-
-
-```{r}
-#use only features_short
-y_penalized <- coin_history$market_cap                              # Dependent variable
-x_penalized <- coin_history %>%                                  # Predictors
-    dplyr::select(all_of(features_short)) %>% as.matrix() 
-fit_lasso <- glmnet(x_penalized, y_penalized, alpha = 1)    # Model alpha = 1: LASSO
-lasso_res <- summary(fit_lasso$beta)                        # Extract LASSO coefs
-lambda <- fit_lasso$lambda                                  # Values of the penalisation const
-lasso_res$Lambda <- lambda[lasso_res$j]                     # Put the labels where they belong
-lasso_res$Feature <- features[lasso_res$i] %>% as.factor()  # Add names of variables to output
-lasso_res[1:120,] %>%                                       # Take the first 120 estimates
-    ggplot(aes(x = Lambda, y = x, color = Feature)) +       # Plot!
-    geom_line() + coord_fixed(0.25) + ylab("beta") +        # Change aspect ratio of graph
-    theme(legend.text = element_text(size = 7)) +            # Reduce legend font size
-    ggtitle("data_ml.RData")
+```{r reg, warning = FALSE, message = FALSE}
+data %>% group_by(time_open) %>%             # Grouping to normalise on a date basis
+    mutate_if(is.numeric,scale) %>%     # Scaled chars
+    ungroup() %>%                       # Ungroup: global variable
+    select(-timestamp, -slug, -id, -name, -symbol, -ref_cur, -time_open, -time_high, -time_low, -time_close) %>%    # Take out irrelevant columns for the regression
+    lm(F_Return ~ ., data = .) %>%      # Perform the regression
+    summary() %>%                       # Get the summary
+    "$"(coef) %>%                       # Keeping only the coefs & stats
+    round(3) %>%                        # Round up to 3 digits
+    data.frame()                        # Convert to dataframe
 ```
 
 
-##### WIP
-######################
-```{r}
-fit_ridge <- glmnet(x_penalized, y_penalized, alpha = 0)                  # alpha = 0: ridge
-ridge_res <- summary(fit_ridge$beta)                                      # Extract ridge coefs
-lambda <- fit_ridge$lambda                                                # Penalisation const
-ridge_res$Feature <- features[ridge_res$i] %>% as.factor()
-ridge_res$Lambda <- lambda[ridge_res$j]                                   # Set labels right
-ridge_res %>% 
-    filter(Feature %in% levels(droplevels(lasso_res$Feature[1:120]))) %>% # Keep same features 
-    ggplot(aes(x = Lambda, y = x, color = Feature)) + ylab("beta") +      # Plot!
-    geom_line() + scale_x_log10() + coord_fixed(45) +                     # Aspect ratio 
-    theme(legend.text = element_text(size = 7)) +
-    ggtitle("data_ml.RData")
+```{r lasso_1, warning = FALSE, message = FALSE}
+data_lasso <-  data %>% group_by(time_open) %>%          # Grouping to normalise on a date-by-date basis
+    mutate_if(is.numeric,scale) %>%                 # Scaled chars
+    ungroup()  #%>%                                  # Ungroup: global variable
+  #filter(Tick=="AAPL")
+y <- data_lasso$F_Return                            # Dependent variable
+x <- data_lasso %>%                                 # Independent variables
+    select(-timestamp, -slug, -id, -name, -symbol, -ref_cur, -time_open, -time_high, -time_low, -time_close) %>%    # Removing irrelevant columns
+    as.matrix()                                     # Transform in base matrix
+fit <- glmnet(x,y, alpha = 0.005)                       # Performing the LASSO: 1 = Lasso, 0 = Ridge
+# Below, we format the results
+var_names1 =  colnames(data)[7:12]                # Names of independent variables
+var_names2 =  colnames(data)[17:18] 
+var_names = c(var_names1, var_names2)
+res <- summary(fit$beta)                            # Summary of the series of LASSO regressions
+lambda <- fit$lambda                                # Values of the penalisation constant
+res$Lambda <- lambda[res$j]                         # Putting the labels where they belong
+res$Char <- var_names[res$i] %>% as.factor()        # Adding names of variables to the output
+res %>% ggplot(aes(x = Lambda, y = x, color = Char)) + geom_line() # Plot!
+```
+```{r, ridge}
+fit <- glmnet(x,y, alpha = 0)                   # Performing ridge regression: 1 = Lasso, 0 = Ridge
+res <- summary(fit$beta)                        # Summary of the series of ridge regressions
+lambda <- fit$lambda                            # Values of the penalisation constant
+res$Lambda <- lambda[res$j]                     # Putting the labels where they belong
+res$Char <- var_names[res$i] %>% as.factor()    # Adding the names of variables to the output
+res %>% ggplot(aes(x = Lambda, y = x, color = Char)) + geom_line() # Plot!
+res %>% ggplot(aes(x = Lambda, y = x, color = Char)) + geom_line() + scale_x_log10() # Logscale plot
 ```
 
-```{r}
-# Now use the RData dataset to create visualizations (hint: compute returns first, set coord_fixed = 10 for the new lasso and coord_fixed = 2000 for the new ridge regression). Which differences do you observe?
-load("data_full.RData")
-features <- colnames(data) [4:ncol(data)] #get feature names from data_full.RData set
-data <- data  %>%
-    group_by(Tick) %>%                          # Grouping: returns computed stock-by-stock
-    mutate(Return = lead(Close,n=1)/Close -1)%>% # Adding returns: simple (future!) returns
-    na.omit() %>%                               # Take out missing values
-    ungroup()
-y_penalized <- data$Return                          # Dependent variable
-x_penalized <- data %>%      
-    dplyr::select(all_of(features)) %>% as.matrix() 
-fit_lasso <- glmnet(x = x_penalized, y = y_penalized, alpha = 1)    # Model alpha = 1: LASSO
-lasso_res <- summary(fit_lasso$beta)                        # Extract LASSO coefs
-lambda <- fit_lasso$lambda                                  # Values of the penalisation const
-lasso_res$Lambda <- lambda[lasso_res$j]                     # Put the labels where they belong
-lasso_res$Feature <- features[lasso_res$i] %>% as.factor()  # Add names of variables to output
-lasso_res[1:120,] %>%                                       # Take the first 120 estimates
-    ggplot(aes(x = Lambda, y = x, color = Feature)) +       # Plot!
-    geom_line() + coord_fixed(10) + ylab("beta") +        # Change aspect ratio of graph
-    theme(legend.text = element_text(size = 7)) +            # Reduce legend font size
-    ggtitle("data_full.RData")
+```{r, elasticnet}
+fit <- glmnet(x,y, alpha = 0.01)                   # The elasticnet: 1 = Lasso, 0 = Ridge
+res <- summary(fit$beta)                            # Summary of elasticnet regressions
+lambda <- fit$lambda                                # Values of the penalisation constant
+res$Lambda <- lambda[res$j]                         # Putting the labels where they belong
+res$Char <- var_names[res$i] %>% as.factor()        # Adding the names of variables to the output
+res %>% ggplot(aes(x = Lambda, y = x, color = Char)) + geom_line()
+```
+### WIP
 
-fit_ridge <- glmnet(x_penalized, y_penalized, alpha = 0)                  # alpha = 0: ridge
-ridge_res <- summary(fit_ridge$beta)                                      # Extract ridge coefs
-lambda <- fit_ridge$lambda                                                # Penalisation const
-ridge_res$Feature <- features[ridge_res$i] %>% as.factor()
-ridge_res$Lambda <- lambda[ridge_res$j]                                   # Set labels right
-ridge_res %>% 
-    filter(Feature %in% levels(droplevels(lasso_res$Feature[1:120]))) %>% # Keep same features 
-    ggplot(aes(x = Lambda, y = x, color = Feature)) + ylab("beta") +      # Plot!
-    geom_line() + scale_x_log10() + coord_fixed(2000) +                     # Aspect ratio 
-    theme(legend.text = element_text(size = 7)) +
-    ggtitle("data_full.RData")
-#We observe e.g. that for the data_full.RData set the Vol_1M seems to have the highest impact, dropping out last 
+```{r sparse_init, warning = FALSE, message = FALSE}
+sep_date <- as.Date("2017-01-01")           # This date separates in-sample vs out-of-sample
+t_oos <- data$time_open[data$time_open>sep_date] %>%  # Out-of-sample dates (i.e., testing set)
+    unique() %>%                            # Remove duplicates
+    as.Date(origin = "1970-01-01")          # Transform in date format
+returns <- data %>%                         # Computing returns, in matrix format, in 2 steps:
+    select(time_open, name, P_Return) %>%        # 1. Keep returns along with dates & firm names
+    spread(key = name, value = P_Return)    # 2. Put in matrix shape
+# Below, we initialise the variables used in the backtesting loop
+portf_weights <- tibble(0, nrow = length(t_oos), ncol = length(id))
+portf_returns <- c()                                                  
+returns                                     # A look at the returns
 ```
 
-```{r 2. Shrinkage vs Asset-specific regularization, message = FALSE, warning = FALSE}
-#2.  Shrinkage vs Asset-specific regularization: Adding to the portfolio tests you have used so far, create
-   #  - a weighting function that uses shrinkage for the inverse covariance matrix, backtest the performance for various lambdas and the minimum-variance (_MV_) as well as the maximum Sharpe ratio portfolios (_MSR_)
-pacman::p_load(tidyverse, lubridate, PerformanceAnalytics, cowplot, timetk)
-#load data
-load("data_full.RData")                      # Loading the data: IF DIRECTORY OK!
-data <- data %>% arrange(Date,Tick)     # Ranked first according to date and then stocks
-data <- data  %>%
-    group_by(Tick) %>%                          # Grouping: returns computed stock-by-stock
-    mutate(Return = lead(Close,n=1)/Close -1)%>% # Adding returns: simple (future!) returns
-    na.omit() %>%                               # Take out missing values
-    ungroup()
-#prepare returns
-returns <- data %>%                             # Take data
-    select(Tick, Date, Return) %>%              # Select 3 columns
-    pivot_wider(names_from = Tick, values_from = Return)          # Put them into 'matrix' format
-#initialize the variables 
-tick <- levels(data$Tick)               # Set of assets
-t_all <- unique(data$Date)              # Set of dates
-sep_date <- as.Date("2010-01-01")       # This date separates in-sample vs out-of-sample
-t_oos <- t_all[t_all > sep_date]        # Out-of-sample dates (i.e., testing set)
-nb_port <- 3                                                    # Nb of portfolios
-portf_weights <- array(0, dim = c(length(t_oos) , nb_port, length(tick)))   # Store weights
-portf_returns <- matrix(0, nrow = length(t_oos) , ncol = nb_port)           # Store returns
-perf_met <- function(port_returns,asset_returns, weights, dates){
-  returns <- port_returns %>%
-  bind_cols(dates) %>%
-  tk_xts()  #performanceAnalytics package needs xts object, not tibble
-  
-  turnover_simple <- 0
-  turnover_full <- 0
-  realised_returns <- NA
-  for(t in 2:length(dates)){
-    realised_returns <- asset_returns %>% filter(Date == dates[t]) %>% select(-Date)
-    prior_weights <- weights[t-1,] * (1 + realised_returns) # Before rebalancing
-    turnover_simple <- turnover_simple + sum(abs(weights[t,] - weights[t-1,]))
-    turnover_full <- turnover_full + apply(abs(weights[t,] - prior_weights/sum(prior_weights)),1,sum)
-  }
-  met <- data.frame(avgRet = Mean.arithmetic(returns)[1],
-            retAnu = Return.annualized(returns)[1], 
-            vol = StdDev(returns)[1],
-             SR = SharpeRatio(returns)[1],
-             VaR = VaR(returns)[1],
-             MDD = maxDrawdown(returns)[1],
-             turnover_simple = (turnover_simple/(length(dates)-1)),
-             turnover_full = (turnover_full/(length(dates)-1)), 
-             row.names = "metrics") 
-  
-  met <- met %>%
-    mutate(MAR = retAnu/MDD, 
-           TCSR = (avgRet - 0.0005*turnover_full)/vol) %>% #cannot access cols already above
-    return()
-}
-```
-
-```{r}
-weights_multi <- function(returns,j,train_data = NULL, test_data = NULL, features = NULL, boxConstraint = NULL, alpha = 0.1, lambda = 0.1){   # Strategies are indexed by j
-    if(j == 1){ # j = 1 => MSR
-      m <- apply(returns, 2, mean)  # Vector of average returns
-      sigma <- cov(returns)         # Covariance matrix
-      sigma <- sigma + lambda*diag(ncol(returns)) #add shrinkage to make invertible
-      w <- solve(sigma) %*% m       # Raw weights
-      
-      if (!is.null(boxConstraint)) { #winsorized if quantiles specified, otherwise skip
-        w[w > quantile(w, boxConstraint[1])] <- quantile(w, boxConstraint[1])        
-        w[w > quantile(w, boxConstraint[2])] <- quantile(w, boxConstraint[2])
-      }
-      
-      return(w / sum(w))            # Returns normalised, potentially winsorized weights
+```{r sparse_func}
+weights_lasso <- function(returns, alpha, lambda){  # The parameters are defined here
+    w <- 0                                          # Initiate weights
+    for(i in 1:ncol(returns)){                      # Loop on the assets
+        y <- returns[,i]                            # Dependent variable
+        x <- returns[,-i]                           # Independent variable
+        fit <- glmnet(x,y, family = "gaussian", alpha = alpha, lambda = lambda)
+        err <- y-predict(fit, x)                    # Prediction errors
+        w[i] <- (1-sum(fit$beta))/var(err)          # Output: weight of asset i
     }
-    if(j == 2){ # j = 2 => EW
-        N <- length(returns[1,])
-        return(rep(1/N,N))
-    }
-    if(j == 3) { # j = 3 => Minimum-Variance
-      sigma <- cov(returns)         # Covariance matrix
-      sigma <- sigma + lambda*diag(ncol(returns)) #add shrinkage to make invertible
-      ones <- rep(1,ncol(returns))  #Vector of 1
-      w <- t(solve(sigma) %*% ones)/drop(ones %*% solve(sigma) %*% ones)
-      
-      if (!is.null(boxConstraint)) { #winsorized if quantiles specified, otherwise skip
-        w[w > quantile(w, boxConstraint[1])] <- quantile(w, boxConstraint[1])        
-        w[w > quantile(w, boxConstraint[2])] <- quantile(w, boxConstraint[2])
-      }
-      return(w / sum(w))
-    }
-    if(j == 4) { #MSR w/ asset level regularization
-      w <- 0                                                # Initiate weights
-      m <- apply(returns, 2, mean)  # Vector of average returns
-      #sigmaInv <- matrix(0, ncol(returns),ncol(returns))
-      for(i in 1:ncol(returns)){                            # Loop on the assets
-          y <- returns[,i] %>% as.matrix()                  # Dependent variable
-          x <- returns[,-i] %>% as.matrix()                 # Independent variable = all other variables
-          fit <- glmnet(x,y, family = "gaussian", alpha = alpha, lambda = lambda)
-          err <- y-predict(fit, x)                          # Prediction errors
-          w[i] <- (1-sum(fit$beta))/var(err)                # Output: weight of asset i
-          #sigmaInv[i,] <- as.vector((1-fit$beta))/var(err)
-      }
-      w <- w * m # is this correct for MSR?
-      return(w/sum(w))      
-    }
-    if(j == 5) { #MV w/ asset level regularization
-      w <- 0                                                # Initiate weights
-      for(i in 1:ncol(returns)){                            # Loop on the assets
-          y <- returns[,i] %>% as.matrix()                  # Dependent variable
-          x <- returns[,-i] %>% as.matrix()                 # Independent variable = all other variables
-          fit <- glmnet(x,y, family = "gaussian", alpha = alpha, lambda = lambda)
-          err <- y-predict(fit, x)                          # Prediction errors
-          w[i] <- (1-sum(fit$beta))/var(err)                # Output: weight of asset i
-      }
-      return(w / sum(w))
-    }
-  
-  
-   
+    return(w / sum(w))                              # Normalisation of weights
 }
-```
-# port_metrics <- matrix(NA, nb_port, ncol=9, T) 
-# colnames(port_metrics) <- c("avgRet", "vol", "SR", "VaR", "MDD", "Turn_s", "Turn_f", "MAR", "TCSR") #metrics calculated by function
-# rownames(port_metrics) <- c("MSR", "EW", "MV", "ML")
-# for (i in 1:nb_port) { #compute metrics for each strategy
-#   port_metrics[i,] <- perf_met(port_returns = portf_returns[,i], asset_returns = returns, dates=t_oos, weights = portf_weights[,i,]) %>%
-#     unlist() %>%
-#     matrix(.,TRUE)
-# }
-# port_metrics
-lambdas = c(0.01,0.1,0.25,.5,.75)
-portf_returns <- matrix(0, nrow = length(t_oos), ncol = length(lambdas))           # Store returns
-portf_weights <- array(0, dim = c(length(t_oos), length(lambdas), length(tick)))   # Store weights
-for(t in 1:(length(t_oos)-1)){
-    past_returns <- returns %>%
-          filter(Date < t_oos[t]) %>%  #Expanding window!
-          select(-Date)
-    realised_returns <- returns %>%
-          filter(Date ==  t_oos[t]) %>%
-          select(-Date)
-    for(i in 1:length(lambdas)) {
-        portf_weights[t,i,] <- weights_multi(returns = past_returns,j = 1, features = c("Mkt_Cap", "P2B", "RSI_1M", "D2E", "Prof_Marg"), lambda = lambdas[i])   
-        portf_returns[t,i] <- sum(portf_weights[t,i,] * realised_returns)        
-    }
-}
-g1 <- tibble(date = t_oos,
-      MSR_0.01 = cumprod(1+portf_returns[,1]),
-      MSR_0.1 = cumprod(1+portf_returns[,2]),
-      MSR_0.25 = cumprod(1+portf_returns[,3]),
-      MSR_0.5 = cumprod(1+portf_returns[,4]),
-      MSR_0.75 = cumprod(1+portf_returns[,5])) %>%
-    gather(key = strat, value = value, -date) %>%
-    ggplot(aes(x = date, y = value, color = strat)) + geom_line() +theme_grey()
-portf_returns <- matrix(0, nrow = length(t_oos) , ncol = length(lambdas))           # Store returns
-portf_weights <- array(0, dim = c(length(t_oos) , length(lambdas), length(tick)))   # Store weights
-  for(t in 1:(length(t_oos)-1)){
-    past_returns <- returns %>%
-          filter(Date < t_oos[t]) %>%  #Expanding window!
-          select(-Date)
-    realised_returns <- returns %>%
-          filter(Date ==  t_oos[t]) %>%
-          select(-Date)
-    for(i in 1:length(lambdas)) {
-          portf_weights[t,i,] <- weights_multi(returns = past_returns,j = 3, features = c("Mkt_Cap", "P2B", "RSI_1M", "D2E", "Prof_Marg"), lambda =  lambdas[i])
-          portf_returns[t,i] <- sum(portf_weights[t,i,] * realised_returns)        
-  }
-}
-g2 <- tibble(date = t_oos,
-      MV_0.01 = cumprod(1+portf_returns[,1]),
-      MV_0.1 = cumprod(1+portf_returns[,2]),
-      MV_0.25 = cumprod(1+portf_returns[,3]),
-      MV_0.5 = cumprod(1+portf_returns[,4]),
-      MV_0.75 = cumprod(1+portf_returns[,5])) %>%
-    gather(key = strat, value = value, -date) %>%
-    ggplot(aes(x = date, y = value, color = strat)) + geom_line() +theme_grey()
-plot_grid(g1,g2, nrow = 2)
-   # - a weighting function that uses asset-level regularization for the inverse covariance matrix. Try several parameters (alpha and lambda) for the MV as well as the MSR
-lambdas = c(0.01,0.1,0.25,0.5,0.75)
-alphas = c(0.01,0.1,0.25,0.5,0.75)
-portf_returns <- matrix(0, nrow = length(t_oos) , ncol = length(lambdas))           # Store returns
-portf_weights <- array(0, dim = c(length(t_oos) , length(lambdas), length(tick)))   # Store weights
-  for(t in 1:(length(t_oos)-1)){
-    past_returns <- returns %>%
-          filter(Date < t_oos[t]) %>%  #Expanding window!
-          select(-Date)
-    realised_returns <- returns %>%
-          filter(Date ==  t_oos[t]) %>%
-          select(-Date)
-    for(i in 1:length(lambdas)) {
-          portf_weights[t,i,] <- weights_multi(returns = past_returns,j = 4, features = c("Mkt_Cap", "P2B", "RSI_1M", "D2E", "Prof_Marg"), lambda =  lambdas[i])
-          portf_returns[t,i] <- sum(portf_weights[t,i,] * realised_returns)        
-  }
-}
-g4 <- tibble(date = t_oos,
-      MSR_0.01 = cumprod(1+portf_returns[,1]),
-      MSR_0.1 = cumprod(1+portf_returns[,2]),
-      MSR_0.25 = cumprod(1+portf_returns[,3]),
-      MSR_0.5 = cumprod(1+portf_returns[,4]),
-      MSR_0.75 = cumprod(1+portf_returns[,5])) %>%
-    gather(key = strat, value = value, -date) %>%
-    ggplot(aes(x = date, y = value, color = strat)) + geom_line() +theme_grey()
-portf_returns <- matrix(0, nrow = length(t_oos) , ncol = length(lambdas))           # Store returns
-portf_weights <- array(0, dim = c(length(t_oos) , length(lambdas), length(tick)))   # Store weights
-  for(t in 1:(length(t_oos)-1)){
-    past_returns <- returns %>%
-          filter(Date < t_oos[t]) %>%  #Expanding window!
-          select(-Date)
-    realised_returns <- returns %>%
-          filter(Date ==  t_oos[t]) %>%
-          select(-Date)
-    for(i in 1:length(lambdas)) {
-          portf_weights[t,i,] <- weights_multi(returns = past_returns,j = 5, features = c("Mkt_Cap", "P2B", "RSI_1M", "D2E", "Prof_Marg"), lambda =  lambdas[i])
-          portf_returns[t,i] <- sum(portf_weights[t,i,] * realised_returns)        
-  }
-}
-g5 <- tibble(date = t_oos,
-      MV_0.01 = cumprod(1+portf_returns[,1]),
-      MV_0.1 = cumprod(1+portf_returns[,2]),
-      MV_0.25 = cumprod(1+portf_returns[,3]),
-      MV_0.5 = cumprod(1+portf_returns[,4]),
-      MV_0.75 = cumprod(1+portf_returns[,5])) %>%
-    gather(key = strat, value = value, -date) %>%
-    ggplot(aes(x = date, y = value, color = strat)) + geom_line() +theme_grey()
-plot_grid(g4,g5, nrow = 2)
 ```
 
-```{r 3. Create predictive (LASSO-based) regressions for the out-of-sample asset returns, message = FALSE, warning = FALSE}
-# 3.  Create predictive (LASSO-based) regressions for the out-of-sample asset returns (cf. S3_Lasso, line 285). Follow the example and create a weighting function for a portfolio that invests in all assets that have above-median predictions. What weights would you give those assets? Check out-of-sample volatilities and also try different combinations of lambda and alpha to see whether your results improve. Use the forecasts as direct inputs to the maximum Sharpe ratio portfolio. What do you observe?
-pacman::p_load(tidyverse, lubridate, PerformanceAnalytics, cowplot, timetk)
-load("data.RData")                                  # Loading the data
-data <- data %>% arrange(Date,Tick)                 # Just making sure all is in order
-tick <- levels(data$Tick)                           # Set of assets
-sep_date <- as.Date("2010-01-01")       # This date separates in-sample vs out-of-sample
-data <- data  %>% 
-    group_by(Tick) %>%                              # Group asset by asset
-    mutate(P_Return = Close / lag(Close) - 1) %>%   # Adding past returns
-    mutate(F_Return = dplyr::lead(P_Return)) %>%    # Adding forward returns
-    na.omit()                                       # Take out missing data
-data_lasso <-  data %>% group_by(Date) %>%          # Grouping to normalise on a date-by-date basis
-    mutate_if(is.numeric,scale) %>%                 # Scaled chars #Q: what does scale do here??
-    ungroup()                                       # Ungroup: global variable
-returns <- data %>%                             # Take data
-    select(Tick, Date, P_Return) %>%              # Select 3 columns
-    pivot_wider(names_from = Tick, values_from = P_Return)          # Put them into 'matrix' format
-weights_pure_lasso <- function(past_data,current_data, alpha, lambda){
-    y <- past_data$F_Return                                 # Dependent variable
-    x <- past_data %>%                                      # Independent variables
-        select(-Tick, -Date, - Close, -F_Return) %>%        # Remove irrelevant columns
-        as.matrix()                                         # Format to matrix shape
-    fit <- glmnet(x,y, alpha = alpha, lambda = lambda)      # Performing the glmnet regression
-    newx <- current_data %>%                                # Preparing the new data
-        select(-Tick, -Date, - Close, -F_Return) %>%        # Remove irrelevant columns
-        as.matrix()                                         # Format to matrix shape
-    pred <- predict(fit, newx = newx)                       # Launching the prediction
-    w <- pred > 0                                           # Invests only if positive prediction
-    return(w/sum(w))                                        # Then, equal weights
+###
+# Problem, some values are NA, what if we replace NA with mean of closes neighboors? 
+# 
+```{r sparse_go}
+for(t in 1:length(t_oos)){
+    temp_data <- returns %>% filter(time_open < t_oos[t]) %>%    # Extracting past data: expand. window 
+        select(-time_open) %>%                                   # Take out the date
+        as.matrix()                                         # Into matrix: glmnet requires matrices
+    portf_weights[t,] <- weights_lasso(temp_data, 0.1, 0.01)# Hard-coded parameters! User specified!
+    realised_returns <- returns %>%                         # Realised returns:
+        filter(Date ==  t_oos[t]) %>%                       # Filtered by date
+        select(-Date)                                       # With date removed
+    portf_returns[t] <- sum(portf_weights[t,] * realised_returns) # Portfolio returns
 }
-perf_met <- function(port_returns,asset_returns, weights, dates){
-  returns <- port_returns %>%
-  bind_cols(dates) %>%
-  tk_xts()  #performanceAnalytics package needs xts object, not tibble
-  
-  turnover_simple <- 0
-  turnover_full <- 0
-  realised_returns <- NA
-  for(t in 2:length(dates)){
-    realised_returns <- asset_returns %>% filter(Date == dates[t]) %>% select(-Date)
-    prior_weights <- weights[t-1,] * (1 + realised_returns) # Before rebalancing
-    turnover_simple <- turnover_simple + sum(abs(weights[t,] - weights[t-1,]))
-    turnover_full <- turnover_full + apply(abs(weights[t,] - prior_weights/sum(prior_weights)),1,sum)
-  }
-  met <- data.frame(avgRet = Mean.arithmetic(returns)[1],
-             retAnu = Return.annualized(returns)[1], 
-             sd = StdDev(returns)[1],
-             sdAnu = sd.annualized(returns)[1],
-             SR = SharpeRatio(returns)[1],
-             VaR = VaR(returns)[1],
-             MDD = maxDrawdown(returns)[1],
-             turnover_simple = (turnover_simple/(length(dates)-1)),
-             turnover_full = (turnover_full/(length(dates)-1)), 
-             row.names = "metrics") 
-  
-  met <- met %>%
-    mutate(MAR = retAnu/MDD, 
-           TCSR = (avgRet - 0.0005*turnover_full)/sd) %>% #cannot access cols already above
-    return()
-}
-t_oos2 <- data$Date[data$Date>sep_date-20] %>%      # New dates, we take one more (prev. month)!
-    unique() %>%                                    # Remove duplicates
-    as.Date(origin = "1970-01-01")                  # Transform in date format
-portf_weights <- matrix(0, nrow = length(t_oos2), ncol = length(tick))   # Initialisation
-portf_returns <- c()                                                    # Initialisation
-for(t in 2:length(t_oos2)){                                         # Current time is t-1
-    past_data <- data_lasso %>% filter(Date < t_oos2[t-1])          # Past data: expanding window
-    current_data <- data_lasso %>% filter(Date == t_oos2[t-1])      # Extracting current data
-    portf_weights[t-1,] <- weights_pure_lasso(past_data,current_data, 0.1, 0.01)  # Hard-coded parameters, User specified!
-    realised_returns <- returns %>%                     # Realised returns
-        filter(Date ==  t_oos2[t]) %>%                  # Note: starts at t = 2, equal to t_oos[1]
-        select(-Date)                                   # Take out date column
-    portf_returns[t-1] <- sum(portf_weights[t-1,] * realised_returns) # Note: t-1, like for the portfolios !!!
-}
-asset_returns <- filter(returns, Date %in% t_oos2) # And not t_oos! #Q: should this be t_oo2?
-met <- perf_met(port_returns = portf_returns, weights = portf_weights, asset_returns = asset_returns, dates=t_oos2[1:99])
-met
 ```
+
+
+
+
+
